@@ -371,8 +371,17 @@ impl ScheduleGraph {
     }
 
     fn add_systems<P>(&mut self, systems: impl IntoSystemConfigs<P>) {
-        let SystemConfigs { systems, chained } = systems.into_configs();
-        let mut system_iter = systems.into_iter();
+        let SystemConfigs {
+            systems,
+            graph_info,
+            conditions,
+            chained,
+        } = systems.into_configs();
+        let implicit_set =
+            AnonymousSystemSet::new(systems.iter().map(|config| config.system.name()));
+        let mut system_iter = systems
+            .into_iter()
+            .map(|system| system.in_set(implicit_set.clone()));
         if chained {
             let Some(prev) = system_iter.next() else { return };
             let mut prev_id = self.add_system_inner(prev).unwrap();
@@ -386,6 +395,11 @@ impl ScheduleGraph {
                 self.add_system_inner(system).unwrap();
             }
         }
+        self.configure_set(SystemSetConfig {
+            conditions,
+            graph_info,
+            set: Box::new(implicit_set),
+        });
     }
 
     fn add_system<P>(&mut self, system: impl IntoSystemConfig<P>) {

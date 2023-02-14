@@ -485,6 +485,8 @@ mod sealed {
 /// A collection of [`SystemConfig`].
 pub struct SystemConfigs {
     pub(super) systems: Vec<SystemConfig>,
+    pub(super) graph_info: GraphInfo,
+    pub(super) conditions: Vec<BoxedCondition>,
     /// If `true`, adds `before -> after` ordering constraints between the successive elements.
     pub(super) chained: bool,
 }
@@ -518,6 +520,14 @@ where
     /// Run after all systems in `set`.
     fn after<M>(self, set: impl IntoSystemSet<M>) -> SystemConfigs {
         self.into_configs().after(set)
+    }
+
+    /// Run these systems only if the [`Condition`] is `true`.
+    ///
+    /// The `Condition` will be evaluated at most once (per schedule run),
+    /// the first time one of these systems prepares to run.
+    fn run_if<P>(self, condition: impl Condition<P>) -> SystemConfigs {
+        self.into_configs().run_if(condition)
     }
 
     /// Suppress warnings and errors that would result from these systems having ambiguities
@@ -555,10 +565,7 @@ impl IntoSystemConfigs<()> for SystemConfigs {
             !set.is_base(),
             "Systems cannot be added to 'base' system sets using 'in_set'. Use 'in_base_set' instead."
         );
-        for config in &mut self.systems {
-            config.graph_info.sets.push(set.dyn_clone());
-        }
-
+        self.graph_info.sets.push(Box::new(set));
         self
     }
 
@@ -572,51 +579,38 @@ impl IntoSystemConfigs<()> for SystemConfigs {
             set.is_base(),
             "Systems cannot be added to normal sets using 'in_base_set'. Use 'in_set' instead."
         );
-        for config in &mut self.systems {
-            config.graph_info.set_base_set(set.dyn_clone());
-        }
-
+        self.graph_info.set_base_set(Box::new(set));
         self
     }
 
     fn before<M>(mut self, set: impl IntoSystemSet<M>) -> Self {
-        let set = set.into_system_set();
-        for config in &mut self.systems {
-            config
-                .graph_info
-                .dependencies
-                .push(Dependency::new(DependencyKind::Before, set.dyn_clone()));
-        }
-
+        self.graph_info.dependencies.push(Dependency::new(
+            DependencyKind::Before,
+            Box::new(set.into_system_set()),
+        ));
         self
     }
 
     fn after<M>(mut self, set: impl IntoSystemSet<M>) -> Self {
-        let set = set.into_system_set();
-        for config in &mut self.systems {
-            config
-                .graph_info
-                .dependencies
-                .push(Dependency::new(DependencyKind::After, set.dyn_clone()));
-        }
+        self.graph_info.dependencies.push(Dependency::new(
+            DependencyKind::After,
+            Box::new(set.into_system_set()),
+        ));
+        self
+    }
 
+    fn run_if<P>(mut self, condition: impl Condition<P>) -> Self {
+        self.conditions.push(new_condition(condition));
         self
     }
 
     fn ambiguous_with<M>(mut self, set: impl IntoSystemSet<M>) -> Self {
-        let set = set.into_system_set();
-        for config in &mut self.systems {
-            ambiguous_with(&mut config.graph_info, set.dyn_clone());
-        }
-
+        ambiguous_with(&mut self.graph_info, Box::new(set.into_system_set()));
         self
     }
 
     fn ambiguous_with_all(mut self) -> Self {
-        for config in &mut self.systems {
-            config.graph_info.ambiguous_with = Ambiguity::IgnoreAll;
-        }
-
+        self.graph_info.ambiguous_with = Ambiguity::IgnoreAll;
         self
     }
 
@@ -789,6 +783,8 @@ macro_rules! impl_system_collection {
                 let ($($sys,)*) = self;
                 SystemConfigs {
                     systems: vec![$($sys.into_config(),)*],
+                    graph_info: GraphInfo::system_set(),
+                    conditions: Vec::new(),
                     chained: false,
                 }
             }

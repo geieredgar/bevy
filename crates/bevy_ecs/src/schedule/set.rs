@@ -1,6 +1,8 @@
+use std::borrow::Cow;
 use std::fmt::Debug;
 use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
+use std::sync::Arc;
 
 pub use bevy_ecs_macros::{ScheduleLabel, SystemSet};
 use bevy_utils::define_boxed_label;
@@ -109,6 +111,58 @@ impl<T> SystemSet for SystemTypeSet<T> {
 
     fn dyn_clone(&self) -> Box<dyn SystemSet> {
         Box::new(*self)
+    }
+}
+
+/// A [`SystemSet`] implicitly created when using
+/// [`Schedule::add_systems`](super::Schedule::add_systems).
+///
+/// The names of the members are stored in a reference counted slice.
+/// The pointer to the slice is used as hash value and for the equality checks.
+pub struct AnonymousSystemSet {
+    system_names: Arc<[Cow<'static, str>]>,
+}
+
+impl AnonymousSystemSet {
+    pub(crate) fn new(system_names: impl Iterator<Item = Cow<'static, str>>) -> Self {
+        Self {
+            system_names: system_names.collect(),
+        }
+    }
+}
+
+impl Debug for AnonymousSystemSet {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "({})", self.system_names.join(", "))
+    }
+}
+
+impl Hash for AnonymousSystemSet {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        Arc::as_ptr(&self.system_names).hash(state)
+    }
+}
+
+impl Clone for AnonymousSystemSet {
+    fn clone(&self) -> Self {
+        Self {
+            system_names: Arc::clone(&self.system_names),
+        }
+    }
+}
+
+impl PartialEq for AnonymousSystemSet {
+    #[inline]
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.system_names, &other.system_names)
+    }
+}
+
+impl Eq for AnonymousSystemSet {}
+
+impl SystemSet for AnonymousSystemSet {
+    fn dyn_clone(&self) -> Box<dyn SystemSet> {
+        Box::new(self.clone())
     }
 }
 
