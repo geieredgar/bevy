@@ -120,7 +120,7 @@ impl<T> SystemSet for SystemTypeSet<T> {
 /// The names of the members are stored in a reference counted slice.
 /// The pointer to the slice is used as hash value and for the equality checks.
 pub struct AnonymousSystemSet {
-    system_names: Arc<[Cow<'static, str>]>,
+    pub system_names: Arc<[Cow<'static, str>]>,
 }
 
 impl AnonymousSystemSet {
@@ -137,8 +137,21 @@ impl Debug for AnonymousSystemSet {
     }
 }
 
+// Two AnonymousSystemSets should only be equal if they are clones from the same instance.
+// Therefore, we only use the pointer to the slice to determine equality.
+impl PartialEq for AnonymousSystemSet {
+    #[inline]
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.system_names, &other.system_names)
+    }
+}
+
+impl Eq for AnonymousSystemSet {}
+
+// Important: This must be kept in sync with the PartialEq/Eq implementation
 impl Hash for AnonymousSystemSet {
     fn hash<H: Hasher>(&self, state: &mut H) {
+        // Only hash the pointer, because thats what we use in the equality check
         Arc::as_ptr(&self.system_names).hash(state);
     }
 }
@@ -150,15 +163,6 @@ impl Clone for AnonymousSystemSet {
         }
     }
 }
-
-impl PartialEq for AnonymousSystemSet {
-    #[inline]
-    fn eq(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.system_names, &other.system_names)
-    }
-}
-
-impl Eq for AnonymousSystemSet {}
 
 impl SystemSet for AnonymousSystemSet {
     fn dyn_clone(&self) -> Box<dyn SystemSet> {
@@ -209,5 +213,50 @@ where
     #[inline]
     fn into_system_set(self) -> Self::Set {
         SystemTypeSet::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        borrow::Cow,
+        collections::hash_map::DefaultHasher,
+        hash::{Hash, Hasher},
+    };
+
+    use super::AnonymousSystemSet;
+
+    #[test]
+    fn same_instance() {
+        let set_a = AnonymousSystemSet::new([Cow::Borrowed("A"), Cow::Borrowed("B")].into_iter());
+        let set_b = set_a.clone();
+
+        assert_eq!(set_a, set_b);
+
+        let mut hasher = DefaultHasher::default();
+        set_a.hash(&mut hasher);
+        let hash_a = hasher.finish();
+
+        let mut hasher = DefaultHasher::default();
+        set_b.hash(&mut hasher);
+        let hash_b = hasher.finish();
+
+        assert_eq!(hash_a, hash_b);
+    }
+
+    #[test]
+    fn same_names() {
+        let set_a = AnonymousSystemSet::new([Cow::Borrowed("A"), Cow::Borrowed("B")].into_iter());
+        let set_b = AnonymousSystemSet::new([Cow::Borrowed("A"), Cow::Borrowed("B")].into_iter());
+
+        assert_ne!(set_a, set_b);
+    }
+
+    #[test]
+    fn different_names() {
+        let set_a = AnonymousSystemSet::new([Cow::Borrowed("A"), Cow::Borrowed("B")].into_iter());
+        let set_b = AnonymousSystemSet::new([Cow::Borrowed("C"), Cow::Borrowed("D")].into_iter());
+
+        assert_ne!(set_a, set_b);
     }
 }
