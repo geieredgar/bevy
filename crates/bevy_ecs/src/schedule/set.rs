@@ -139,7 +139,7 @@ impl Debug for AnonymousSystemSet {
 
 impl Hash for AnonymousSystemSet {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        Arc::as_ptr(&self.system_names).hash(state)
+        Arc::as_ptr(&self.system_names).hash(state);
     }
 }
 
