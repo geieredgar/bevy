@@ -387,7 +387,7 @@ impl ScheduleGraph {
                     Ambiguity::Check => system,
                     Ambiguity::IgnoreWithSet(sets) => {
                         for set in sets {
-                            ambiguous_with(&mut system.graph_info, set.dyn_clone())
+                            ambiguous_with(&mut system.graph_info, set.dyn_clone());
                         }
                         system
                     }
