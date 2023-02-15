@@ -483,12 +483,27 @@ mod sealed {
 }
 
 /// A collection of [`SystemConfig`].
+// NOTE: When adding a field to this struct, consider including them in `should_add_anonymous_set`.
 pub struct SystemConfigs {
     pub(super) systems: Vec<SystemConfig>,
     pub(super) graph_info: GraphInfo,
     pub(super) conditions: Vec<BoxedCondition>,
     /// If `true`, adds `before -> after` ordering constraints between the successive elements.
     pub(super) chained: bool,
+}
+
+impl SystemConfigs {
+    // This decides whether we need to create an anonymous set when adding self to a ScheduleGraph.
+    // If false, only the contained systems are added to the ScheduleGraph, possibly chained,
+    // but without any further graph information or conditions (except the ones found in each
+    // individual system config).
+    pub(super) fn should_add_anonymous_set(&self) -> bool {
+        !self.conditions.is_empty()
+            || !self.graph_info.sets.is_empty()
+            || self.graph_info.base_set.is_some()
+            || !self.graph_info.dependencies.is_empty()
+            || !matches!(self.graph_info.ambiguous_with, Ambiguity::Check)
+    }
 }
 
 /// Types that can convert into a [`SystemConfigs`].
