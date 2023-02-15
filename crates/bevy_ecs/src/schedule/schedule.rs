@@ -298,6 +298,10 @@ impl SystemSetNode {
     pub fn is_system_type(&self) -> bool {
         self.inner.is_system_type()
     }
+
+    pub fn is_anonymous(&self) -> bool {
+        self.inner.is_anonymous()
+    }
 }
 
 /// A [`BoxedSystem`] with metadata, stored in a [`ScheduleGraph`].
@@ -377,30 +381,15 @@ impl ScheduleGraph {
             conditions,
             chained,
         } = systems.into_configs();
-        if conditions.is_empty() {
-            let system_iter = systems.into_iter().map(|mut system| {
-                if let Some(base_set) = &graph_info.base_set {
-                    system.graph_info.set_base_set(base_set.dyn_clone());
-                }
-                system.graph_info.sets.append(&mut graph_info.sets.clone());
-                system
-                    .graph_info
-                    .dependencies
-                    .append(&mut graph_info.dependencies.clone());
-                match &graph_info.ambiguous_with {
-                    Ambiguity::Check => system,
-                    Ambiguity::IgnoreWithSet(sets) => {
-                        for set in sets {
-                            ambiguous_with(&mut system.graph_info, set.dyn_clone());
-                        }
-                        system
-                    }
-                    Ambiguity::IgnoreAll => system.ambiguous_with_all(),
-                }
-            });
-            self.add_system_iter(system_iter, chained);
+        if conditions.is_empty()
+            && graph_info.sets.is_empty()
+            && graph_info.base_set.is_none()
+            && graph_info.dependencies.is_empty()
+            && matches!(graph_info.ambiguous_with, Ambiguity::Check)
+        {
+            self.add_system_iter(systems.into_iter(), chained);
         } else {
-            let implicit_set = AnonymousSystemSet::new();
+            let implicit_set = AnonymousSet::new();
             let system_iter = systems
                 .into_iter()
                 .map(|system| system.in_set(implicit_set));
@@ -521,7 +510,7 @@ impl ScheduleGraph {
         match self.system_set_ids.get(set) {
             Some(set_id) => {
                 if id == set_id {
-                    let string = format!("{:?}", &set);
+                    let string = format!("{:?}", self.get_node_name(id));
                     return Err(ScheduleBuildError::HierarchyLoop(string));
                 }
             }
@@ -558,7 +547,7 @@ impl ScheduleGraph {
             match self.system_set_ids.get(set) {
                 Some(set_id) => {
                     if id == set_id {
-                        let string = format!("{:?}", &set);
+                        let string = format!("{:?}", &self.get_node_name(id));
                         return Err(ScheduleBuildError::DependencyLoop(string));
                     }
                 }
@@ -759,14 +748,34 @@ impl ScheduleGraph {
                                 NodeId::System(index) => {
                                     ScheduleBuildError::SystemInMultipleBaseSets {
                                         system: systems[index].name(),
-                                        first_set: system_sets[first_set.index()].name(),
-                                        second_set: system_sets[calculated_base_set.index()].name(),
+                                        first_set: Self::node_name(
+                                            &first_set,
+                                            systems,
+                                            system_sets,
+                                            hierarchy,
+                                        ),
+                                        second_set: Self::node_name(
+                                            &calculated_base_set,
+                                            systems,
+                                            system_sets,
+                                            hierarchy,
+                                        ),
                                     }
                                 }
                                 NodeId::Set(index) => ScheduleBuildError::SetInMultipleBaseSets {
-                                    set: system_sets[index].name(),
-                                    first_set: system_sets[first_set.index()].name(),
-                                    second_set: system_sets[calculated_base_set.index()].name(),
+                                    set: Self::node_name(&node_id, systems, system_sets, hierarchy),
+                                    first_set: Self::node_name(
+                                        &first_set,
+                                        systems,
+                                        system_sets,
+                                        hierarchy,
+                                    ),
+                                    second_set: Self::node_name(
+                                        &calculated_base_set,
+                                        systems,
+                                        system_sets,
+                                        hierarchy,
+                                    ),
                                 },
                             });
                         }
@@ -1216,10 +1225,48 @@ impl ScheduleGraph {
 // methods for reporting errors
 impl ScheduleGraph {
     fn get_node_name(&self, id: &NodeId) -> String {
+        Self::node_name(id, &self.systems, &self.system_sets, &self.hierarchy)
+    }
+
+    fn node_name(
+        id: &NodeId,
+        systems: &[SystemNode],
+        system_sets: &[SystemSetNode],
+        hierarchy: &Dag,
+    ) -> String {
         match id {
-            NodeId::System(_) => self.systems[id.index()].get().unwrap().name().to_string(),
-            NodeId::Set(_) => self.system_sets[id.index()].name(),
+            NodeId::System(_) => systems[id.index()].get().unwrap().name().to_string(),
+            NodeId::Set(_) => {
+                let set = &system_sets[id.index()];
+                if set.is_anonymous() {
+                    Self::anonymous_set_name(id, systems, system_sets, hierarchy)
+                } else {
+                    set.name()
+                }
+            }
         }
+    }
+
+    fn anonymous_set_name(
+        id: &NodeId,
+        systems: &[SystemNode],
+        system_sets: &[SystemSetNode],
+        hierarchy: &Dag,
+    ) -> String {
+        format!(
+            "({})",
+            hierarchy
+                .graph
+                .edges_directed(*id, Direction::Outgoing)
+                .map(|(_, member_id, _)| Self::node_name(
+                    &member_id,
+                    systems,
+                    system_sets,
+                    hierarchy
+                ))
+                .reduce(|a, b| format!("{a}, {b}"))
+                .unwrap_or_default()
+        )
     }
 
     fn get_node_kind(id: &NodeId) -> &'static str {

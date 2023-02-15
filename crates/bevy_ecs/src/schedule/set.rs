@@ -24,6 +24,11 @@ pub trait SystemSet: DynHash + Debug + Send + Sync + 'static {
         false
     }
 
+    /// Returns `true` if this system set is a [`AnonymousSet`].
+    fn is_anonymous(&self) -> bool {
+        false
+    }
+
     /// Returns `true` if this set is a "base system set". Systems
     /// can only belong to one base set at a time. Systems and Sets
     /// can only be added to base sets using specialized `in_base_set`
@@ -116,17 +121,21 @@ impl<T> SystemSet for SystemTypeSet<T> {
 /// A [`SystemSet`] implicitly created when using
 /// [`Schedule::add_systems`](super::Schedule::add_systems).
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
-pub struct AnonymousSystemSet(usize);
+pub struct AnonymousSet(usize);
 
 static NEXT_ANONYMOUS_SET_ID: AtomicUsize = AtomicUsize::new(0);
 
-impl AnonymousSystemSet {
+impl AnonymousSet {
     pub(crate) fn new() -> Self {
         Self(NEXT_ANONYMOUS_SET_ID.fetch_add(1, Ordering::Relaxed))
     }
 }
 
-impl SystemSet for AnonymousSystemSet {
+impl SystemSet for AnonymousSet {
+    fn is_anonymous(&self) -> bool {
+        true
+    }
+
     fn dyn_clone(&self) -> Box<dyn SystemSet> {
         Box::new(*self)
     }
@@ -185,11 +194,11 @@ mod tests {
         hash::{Hash, Hasher},
     };
 
-    use super::AnonymousSystemSet;
+    use super::AnonymousSet;
 
     #[test]
     fn same_instance() {
-        let set_a = AnonymousSystemSet::new();
+        let set_a = AnonymousSet::new();
         let set_b = set_a;
 
         assert_eq!(set_a, set_b);
@@ -207,8 +216,8 @@ mod tests {
 
     #[test]
     fn different_instances() {
-        let set_a = AnonymousSystemSet::new();
-        let set_b = AnonymousSystemSet::new();
+        let set_a = AnonymousSet::new();
+        let set_b = AnonymousSet::new();
 
         assert_ne!(set_a, set_b);
     }
