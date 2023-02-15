@@ -24,7 +24,7 @@ pub trait SystemSet: DynHash + Debug + Send + Sync + 'static {
         false
     }
 
-    /// Returns `true` if this system set is a [`AnonymousSet`].
+    /// Returns `true` if this system set is an [`AnonymousSet`].
     fn is_anonymous(&self) -> bool {
         false
     }
