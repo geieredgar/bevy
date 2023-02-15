@@ -379,6 +379,10 @@ impl ScheduleGraph {
         } = systems.into_configs();
         if conditions.is_empty() {
             let system_iter = systems.into_iter().map(|mut system| {
+                if let Some(base_set) = &graph_info.base_set {
+                    system.graph_info.set_base_set(base_set.dyn_clone());
+                }
+                system.graph_info.sets.append(&mut graph_info.sets.clone());
                 system
                     .graph_info
                     .dependencies
