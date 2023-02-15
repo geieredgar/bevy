@@ -140,6 +140,18 @@ impl Schedule {
     }
 
     /// Add a collection of systems to the schedule.
+    ///
+    /// # Note
+    ///
+    /// Using [`in_set`](`IntoSystemConfigs<P>::in_set`),
+    /// [`in_base_set`](`IntoSystemConfigs<P>::in_base_set`),
+    /// [`before`](`IntoSystemConfigs<P>::before`),
+    /// [`after`](`IntoSystemConfigs<P>::after`),
+    /// [`run_if`](`IntoSystemConfigs<P>::run_if`),
+    /// [`ambiguous_with`](`IntoSystemConfigs<P>::ambiguous_with`)
+    /// or [`ambiguous_with_all`](`IntoSystemConfigs<P>::ambiguous_with_all`)
+    /// on [`IntoSystemConfigs<P>`] will implicitly add an [`AnonymousSet`] that contains all
+    /// listed systems.
     pub fn add_systems<P>(&mut self, systems: impl IntoSystemConfigs<P>) -> &mut Self {
         self.graph.add_systems(systems);
         self

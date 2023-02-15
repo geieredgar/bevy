@@ -397,9 +397,26 @@ impl App {
     /// # fn system_a() {}
     /// # fn system_b() {}
     /// # fn system_c() {}
+    /// # fn system_d() {}
     /// #
     /// app.add_systems((system_a, system_b, system_c));
+    /// app.add_systems((system_a, system_b, system_c).chain());
+    /// app.add_systems((system_a, system_b, system_c).after(system_d));
     /// ```
+    ///
+    /// # Note
+    ///
+    /// Using [`in_set`](`IntoSystemConfigs<P>::in_set`),
+    /// [`in_base_set`](`IntoSystemConfigs<P>::in_base_set`),
+    /// [`before`](`IntoSystemConfigs<P>::before`),
+    /// [`after`](`IntoSystemConfigs<P>::after`),
+    /// [`run_if`](`IntoSystemConfigs<P>::run_if`),
+    /// [`ambiguous_with`](`IntoSystemConfigs<P>::ambiguous_with`)
+    /// or [`ambiguous_with_all`](`IntoSystemConfigs<P>::ambiguous_with_all`)
+    /// on [`IntoSystemConfigs<P>`] like in the third example above will implicitly add an
+    /// [`AnonymousSet`] that contains all listed systems.
+    ///
+    /// [`AnonymousSet`]: ../ecs/schedule/struct.AnonymousSet.html
     pub fn add_systems<P>(&mut self, systems: impl IntoSystemConfigs<P>) -> &mut Self {
         let mut schedules = self.world.resource_mut::<Schedules>();
 
