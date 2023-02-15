@@ -377,11 +377,44 @@ impl ScheduleGraph {
             conditions,
             chained,
         } = systems.into_configs();
-        let implicit_set =
-            AnonymousSystemSet::new(systems.iter().map(|config| config.system.name()));
-        let mut system_iter = systems
-            .into_iter()
-            .map(|system| system.in_set(implicit_set.clone()));
+        if conditions.is_empty() {
+            let system_iter = systems.into_iter().map(|mut system| {
+                system
+                    .graph_info
+                    .dependencies
+                    .append(&mut graph_info.dependencies.clone());
+                match &graph_info.ambiguous_with {
+                    Ambiguity::Check => system,
+                    Ambiguity::IgnoreWithSet(sets) => {
+                        for set in sets {
+                            ambiguous_with(&mut system.graph_info, set.dyn_clone())
+                        }
+                        system
+                    }
+                    Ambiguity::IgnoreAll => system.ambiguous_with_all(),
+                }
+            });
+            self.add_system_iter(system_iter, chained);
+        } else {
+            let implicit_set =
+                AnonymousSystemSet::new(systems.iter().map(|config| config.system.name()));
+            let system_iter = systems
+                .into_iter()
+                .map(|system| system.in_set(implicit_set.clone()));
+            self.add_system_iter(system_iter, chained);
+            self.configure_set(SystemSetConfig {
+                conditions,
+                graph_info,
+                set: Box::new(implicit_set),
+            });
+        }
+    }
+
+    fn add_system_iter(
+        &mut self,
+        mut system_iter: impl Iterator<Item = SystemConfig>,
+        chained: bool,
+    ) {
         if chained {
             let Some(prev) = system_iter.next() else { return };
             let mut prev_id = self.add_system_inner(prev).unwrap();
@@ -395,11 +428,6 @@ impl ScheduleGraph {
                 self.add_system_inner(system).unwrap();
             }
         }
-        self.configure_set(SystemSetConfig {
-            conditions,
-            graph_info,
-            set: Box::new(implicit_set),
-        });
     }
 
     fn add_system<P>(&mut self, system: impl IntoSystemConfig<P>) {
