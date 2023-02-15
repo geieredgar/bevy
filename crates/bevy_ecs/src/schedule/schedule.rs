@@ -762,7 +762,7 @@ impl ScheduleGraph {
                                         ),
                                     }
                                 }
-                                NodeId::Set(index) => ScheduleBuildError::SetInMultipleBaseSets {
+                                NodeId::Set(_) => ScheduleBuildError::SetInMultipleBaseSets {
                                     set: Self::node_name(&node_id, systems, system_sets, hierarchy),
                                     first_set: Self::node_name(
                                         &first_set,
