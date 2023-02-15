@@ -65,7 +65,7 @@ fn new_condition<P>(condition: impl Condition<P>) -> BoxedCondition {
     Box::new(condition_system)
 }
 
-pub(super) fn ambiguous_with(graph_info: &mut GraphInfo, set: BoxedSystemSet) {
+fn ambiguous_with(graph_info: &mut GraphInfo, set: BoxedSystemSet) {
     match &mut graph_info.ambiguous_with {
         detection @ Ambiguity::Check => {
             *detection = Ambiguity::IgnoreWithSet(vec![set]);
