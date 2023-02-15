@@ -1,8 +1,7 @@
-use std::borrow::Cow;
 use std::fmt::Debug;
 use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 pub use bevy_ecs_macros::{ScheduleLabel, SystemSet};
 use bevy_utils::define_boxed_label;
@@ -116,57 +115,20 @@ impl<T> SystemSet for SystemTypeSet<T> {
 
 /// A [`SystemSet`] implicitly created when using
 /// [`Schedule::add_systems`](super::Schedule::add_systems).
-///
-/// The names of the members are stored in a reference counted slice.
-/// The pointer to the slice is used as hash value and for the equality checks.
-pub struct AnonymousSystemSet {
-    pub system_names: Arc<[Cow<'static, str>]>,
-}
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+pub struct AnonymousSystemSet(usize);
+
+static NEXT_ANONYMOUS_SET_ID: AtomicUsize = AtomicUsize::new(0);
 
 impl AnonymousSystemSet {
-    pub(crate) fn new(system_names: impl Iterator<Item = Cow<'static, str>>) -> Self {
-        Self {
-            system_names: system_names.collect(),
-        }
-    }
-}
-
-impl Debug for AnonymousSystemSet {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "({})", self.system_names.join(", "))
-    }
-}
-
-// Two AnonymousSystemSets should only be equal if they are clones from the same instance.
-// Therefore, we only use the pointer to the slice to determine equality.
-impl PartialEq for AnonymousSystemSet {
-    #[inline]
-    fn eq(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.system_names, &other.system_names)
-    }
-}
-
-impl Eq for AnonymousSystemSet {}
-
-// Important: This must be kept in sync with the PartialEq/Eq implementation
-impl Hash for AnonymousSystemSet {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        // Only hash the pointer, because thats what we use in the equality check
-        Arc::as_ptr(&self.system_names).hash(state);
-    }
-}
-
-impl Clone for AnonymousSystemSet {
-    fn clone(&self) -> Self {
-        Self {
-            system_names: Arc::clone(&self.system_names),
-        }
+    pub(crate) fn new() -> Self {
+        Self(NEXT_ANONYMOUS_SET_ID.fetch_add(1, Ordering::Relaxed))
     }
 }
 
 impl SystemSet for AnonymousSystemSet {
     fn dyn_clone(&self) -> Box<dyn SystemSet> {
-        Box::new(self.clone())
+        Box::new(*self)
     }
 }
 
@@ -219,7 +181,6 @@ where
 #[cfg(test)]
 mod tests {
     use std::{
-        borrow::Cow,
         collections::hash_map::DefaultHasher,
         hash::{Hash, Hasher},
     };
@@ -228,8 +189,8 @@ mod tests {
 
     #[test]
     fn same_instance() {
-        let set_a = AnonymousSystemSet::new([Cow::Borrowed("A"), Cow::Borrowed("B")].into_iter());
-        let set_b = set_a.clone();
+        let set_a = AnonymousSystemSet::new();
+        let set_b = set_a;
 
         assert_eq!(set_a, set_b);
 
@@ -245,17 +206,9 @@ mod tests {
     }
 
     #[test]
-    fn same_names() {
-        let set_a = AnonymousSystemSet::new([Cow::Borrowed("A"), Cow::Borrowed("B")].into_iter());
-        let set_b = AnonymousSystemSet::new([Cow::Borrowed("A"), Cow::Borrowed("B")].into_iter());
-
-        assert_ne!(set_a, set_b);
-    }
-
-    #[test]
-    fn different_names() {
-        let set_a = AnonymousSystemSet::new([Cow::Borrowed("A"), Cow::Borrowed("B")].into_iter());
-        let set_b = AnonymousSystemSet::new([Cow::Borrowed("C"), Cow::Borrowed("D")].into_iter());
+    fn different_instances() {
+        let set_a = AnonymousSystemSet::new();
+        let set_b = AnonymousSystemSet::new();
 
         assert_ne!(set_a, set_b);
     }

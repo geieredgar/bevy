@@ -400,11 +400,10 @@ impl ScheduleGraph {
             });
             self.add_system_iter(system_iter, chained);
         } else {
-            let implicit_set =
-                AnonymousSystemSet::new(systems.iter().map(|config| config.system.name()));
+            let implicit_set = AnonymousSystemSet::new();
             let system_iter = systems
                 .into_iter()
-                .map(|system| system.in_set(implicit_set.clone()));
+                .map(|system| system.in_set(implicit_set));
             self.add_system_iter(system_iter, chained);
             self.configure_set(SystemSetConfig {
                 conditions,
