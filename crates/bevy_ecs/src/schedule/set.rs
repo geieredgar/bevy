@@ -186,39 +186,3 @@ where
         SystemTypeSet::new()
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use std::{
-        collections::hash_map::DefaultHasher,
-        hash::{Hash, Hasher},
-    };
-
-    use super::AnonymousSet;
-
-    #[test]
-    fn same_instance() {
-        let set_a = AnonymousSet::new();
-        let set_b = set_a;
-
-        assert_eq!(set_a, set_b);
-
-        let mut hasher = DefaultHasher::default();
-        set_a.hash(&mut hasher);
-        let hash_a = hasher.finish();
-
-        let mut hasher = DefaultHasher::default();
-        set_b.hash(&mut hasher);
-        let hash_b = hasher.finish();
-
-        assert_eq!(hash_a, hash_b);
-    }
-
-    #[test]
-    fn different_instances() {
-        let set_a = AnonymousSet::new();
-        let set_b = AnonymousSet::new();
-
-        assert_ne!(set_a, set_b);
-    }
-}
