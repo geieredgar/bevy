@@ -416,7 +416,7 @@ impl App {
     /// on [`IntoSystemConfigs<P>`] like in the third example above will implicitly add an
     /// [`AnonymousSet`] that contains all listed systems.
     ///
-    /// [`AnonymousSet`]: ../ecs/schedule/struct.AnonymousSet.html
+    /// [`AnonymousSet`]: bevy_ecs::schedule::AnonymousSet
     pub fn add_systems<P>(&mut self, systems: impl IntoSystemConfigs<P>) -> &mut Self {
         let mut schedules = self.world.resource_mut::<Schedules>();
 
