@@ -603,7 +603,6 @@ impl IntoSystemConfigs<()> for SystemConfigs {
         if self.is_set {
             self.graph_info.sets.push(Box::new(set));
         } else {
-            let set = set.into_system_set();
             for config in &mut self.systems {
                 config.graph_info.sets.push(set.dyn_clone());
             }
@@ -624,7 +623,6 @@ impl IntoSystemConfigs<()> for SystemConfigs {
         if self.is_set {
             self.graph_info.set_base_set(Box::new(set));
         } else {
-            let set = set.into_system_set();
             for config in &mut self.systems {
                 config.graph_info.set_base_set(set.dyn_clone());
             }
