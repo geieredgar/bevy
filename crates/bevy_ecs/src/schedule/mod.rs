@@ -1,6 +1,7 @@
 mod condition;
 mod config;
 mod executor;
+mod graph;
 mod graph_utils;
 #[allow(clippy::module_inception)]
 mod schedule;

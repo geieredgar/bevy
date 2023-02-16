@@ -2,78 +2,28 @@ use bevy_ecs_macros::all_tuples;
 
 use crate::{
     schedule::{
-        condition::{BoxedCondition, Condition},
-        graph_utils::{Ambiguity, Dependency, DependencyKind, GraphInfo},
+        condition::Condition,
+        graph::{IntoSystemGraph, SystemGraph},
         set::{BoxedSystemSet, IntoSystemSet, SystemSet},
     },
-    system::{BoxedSystem, IntoSystem, System},
+    system::{BoxedSystem, IntoSystem},
 };
 
 /// A [`SystemSet`] with scheduling metadata.
-pub struct SystemSetConfig {
-    pub(super) set: BoxedSystemSet,
-    pub(super) graph_info: GraphInfo,
-    pub(super) conditions: Vec<BoxedCondition>,
-}
+pub struct SystemSetConfig(SystemGraph);
 
 impl SystemSetConfig {
-    fn new(set: BoxedSystemSet) -> Self {
-        // system type sets are automatically populated
-        // to avoid unintentionally broad changes, they cannot be configured
-        assert!(
-            !set.is_system_type(),
-            "configuring system type sets is not allowed"
-        );
-
-        Self {
-            set,
-            graph_info: GraphInfo::system_set(),
-            conditions: Vec::new(),
-        }
+    pub(super) fn into_inner(self) -> SystemGraph {
+        self.0
     }
 }
 
 /// A [`System`] with scheduling metadata.
-pub struct SystemConfig {
-    pub(super) system: BoxedSystem,
-    pub(super) graph_info: GraphInfo,
-    pub(super) conditions: Vec<BoxedCondition>,
-}
+pub struct SystemConfig(SystemGraph);
 
 impl SystemConfig {
-    fn new(system: BoxedSystem) -> Self {
-        // include system in its default sets
-        let sets = system.default_system_sets().into_iter().collect();
-        let mut graph_info = GraphInfo::system();
-        graph_info.sets = sets;
-        Self {
-            system,
-            graph_info,
-            conditions: Vec::new(),
-        }
-    }
-}
-
-fn new_condition<P>(condition: impl Condition<P>) -> BoxedCondition {
-    let condition_system = IntoSystem::into_system(condition);
-    assert!(
-        condition_system.is_send(),
-        "Condition `{}` accesses thread-local resources. This is not currently supported.",
-        condition_system.name()
-    );
-
-    Box::new(condition_system)
-}
-
-fn ambiguous_with(graph_info: &mut GraphInfo, set: BoxedSystemSet) {
-    match &mut graph_info.ambiguous_with {
-        detection @ Ambiguity::Check => {
-            *detection = Ambiguity::IgnoreWithSet(vec![set]);
-        }
-        Ambiguity::IgnoreWithSet(ambiguous_with) => {
-            ambiguous_with.push(set);
-        }
-        Ambiguity::IgnoreAll => (),
+    pub(super) fn into_inner(self) -> SystemGraph {
+        self.0
     }
 }
 
@@ -114,7 +64,7 @@ where
     S: SystemSet + sealed::IntoSystemSetConfig,
 {
     fn into_config(self) -> SystemSetConfig {
-        SystemSetConfig::new(Box::new(self))
+        SystemSetConfig(self.into_graph())
     }
 
     #[track_caller]
@@ -154,7 +104,7 @@ where
 
 impl IntoSystemSetConfig for BoxedSystemSet {
     fn into_config(self) -> SystemSetConfig {
-        SystemSetConfig::new(self)
+        SystemSetConfig(self.into_graph())
     }
 
     #[track_caller]
@@ -198,75 +148,37 @@ impl IntoSystemSetConfig for SystemSetConfig {
     }
 
     #[track_caller]
-    fn in_set(mut self, set: impl SystemSet) -> Self {
-        assert!(
-            !set.is_system_type(),
-            "adding arbitrary systems to a system type set is not allowed"
-        );
-        assert!(
-            !set.is_base(),
-            "Sets cannot be added to 'base' system sets using 'in_set'. Use 'in_base_set' instead."
-        );
-        assert!(
-            !self.set.is_base(),
-            "Base system sets cannot be added to other sets."
-        );
-        self.graph_info.sets.push(Box::new(set));
-        self
+    fn in_set(self, set: impl SystemSet) -> Self {
+        Self(self.0.in_set(set))
     }
 
     #[track_caller]
-    fn in_base_set(mut self, set: impl SystemSet) -> Self {
-        assert!(
-            !set.is_system_type(),
-            "System type sets cannot be base sets."
-        );
-        assert!(
-            set.is_base(),
-            "Sets cannot be added to normal sets using 'in_base_set'. Use 'in_set' instead."
-        );
-        assert!(
-            !self.set.is_base(),
-            "Base system sets cannot be added to other sets."
-        );
-        self.graph_info.set_base_set(Box::new(set));
-        self
+    fn in_base_set(self, set: impl SystemSet) -> Self {
+        Self(self.0.in_base_set(set))
     }
 
-    fn in_default_base_set(mut self) -> SystemSetConfig {
-        self.graph_info.add_default_base_set = true;
-        self
+    fn in_default_base_set(self) -> SystemSetConfig {
+        Self(self.0.in_default_base_set())
     }
 
-    fn before<M>(mut self, set: impl IntoSystemSet<M>) -> Self {
-        self.graph_info.dependencies.push(Dependency::new(
-            DependencyKind::Before,
-            Box::new(set.into_system_set()),
-        ));
-        self
+    fn before<M>(self, set: impl IntoSystemSet<M>) -> Self {
+        Self(self.0.before(set.into_system_set().into_graph()))
     }
 
-    fn after<M>(mut self, set: impl IntoSystemSet<M>) -> Self {
-        self.graph_info.dependencies.push(Dependency::new(
-            DependencyKind::After,
-            Box::new(set.into_system_set()),
-        ));
-        self
+    fn after<M>(self, set: impl IntoSystemSet<M>) -> Self {
+        Self(self.0.after(set.into_system_set().into_graph()))
     }
 
-    fn run_if<P>(mut self, condition: impl Condition<P>) -> Self {
-        self.conditions.push(new_condition(condition));
-        self
+    fn run_if<P>(self, condition: impl Condition<P>) -> Self {
+        Self(self.0.run_if(condition))
     }
 
-    fn ambiguous_with<M>(mut self, set: impl IntoSystemSet<M>) -> Self {
-        ambiguous_with(&mut self.graph_info, Box::new(set.into_system_set()));
-        self
+    fn ambiguous_with<M>(self, set: impl IntoSystemSet<M>) -> Self {
+        Self(self.0.ambiguous_with(set))
     }
 
-    fn ambiguous_with_all(mut self) -> Self {
-        self.graph_info.ambiguous_with = Ambiguity::IgnoreAll;
-        self
+    fn ambiguous_with_all(self) -> Self {
+        Self(self.0.ambiguous_with_all())
     }
 }
 
@@ -308,7 +220,7 @@ where
     F: IntoSystem<(), (), Params> + sealed::IntoSystemConfig<Params>,
 {
     fn into_config(self) -> SystemConfig {
-        SystemConfig::new(Box::new(IntoSystem::into_system(self)))
+        SystemConfig(self.into_graph())
     }
 
     #[track_caller]
@@ -348,7 +260,7 @@ where
 
 impl IntoSystemConfig<()> for BoxedSystem<(), ()> {
     fn into_config(self) -> SystemConfig {
-        SystemConfig::new(self)
+        SystemConfig(self.into_graph())
     }
 
     #[track_caller]
@@ -392,67 +304,37 @@ impl IntoSystemConfig<()> for SystemConfig {
     }
 
     #[track_caller]
-    fn in_set(mut self, set: impl SystemSet) -> Self {
-        assert!(
-            !set.is_system_type(),
-            "adding arbitrary systems to a system type set is not allowed"
-        );
-        assert!(
-            !set.is_base(),
-            "Systems cannot be added to 'base' system sets using 'in_set'. Use 'in_base_set' instead."
-        );
-        self.graph_info.sets.push(Box::new(set));
-        self
+    fn in_set(self, set: impl SystemSet) -> Self {
+        Self(self.0.in_set(set))
     }
 
     #[track_caller]
-    fn in_base_set(mut self, set: impl SystemSet) -> Self {
-        assert!(
-            !set.is_system_type(),
-            "System type sets cannot be base sets."
-        );
-        assert!(
-            set.is_base(),
-            "Systems cannot be added to normal sets using 'in_base_set'. Use 'in_set' instead."
-        );
-        self.graph_info.set_base_set(Box::new(set));
-        self
+    fn in_base_set(self, set: impl SystemSet) -> Self {
+        Self(self.0.in_base_set(set))
     }
 
-    fn no_default_base_set(mut self) -> SystemConfig {
-        self.graph_info.add_default_base_set = false;
-        self
+    fn no_default_base_set(self) -> SystemConfig {
+        Self(self.0.no_default_base_set())
     }
 
-    fn before<M>(mut self, set: impl IntoSystemSet<M>) -> Self {
-        self.graph_info.dependencies.push(Dependency::new(
-            DependencyKind::Before,
-            Box::new(set.into_system_set()),
-        ));
-        self
+    fn before<M>(self, set: impl IntoSystemSet<M>) -> Self {
+        Self(self.0.before(set.into_system_set().into_graph()))
     }
 
-    fn after<M>(mut self, set: impl IntoSystemSet<M>) -> Self {
-        self.graph_info.dependencies.push(Dependency::new(
-            DependencyKind::After,
-            Box::new(set.into_system_set()),
-        ));
-        self
+    fn after<M>(self, set: impl IntoSystemSet<M>) -> Self {
+        Self(self.0.after(set.into_system_set().into_graph()))
     }
 
-    fn run_if<P>(mut self, condition: impl Condition<P>) -> Self {
-        self.conditions.push(new_condition(condition));
-        self
+    fn run_if<P>(self, condition: impl Condition<P>) -> Self {
+        Self(self.0.run_if(condition))
     }
 
-    fn ambiguous_with<M>(mut self, set: impl IntoSystemSet<M>) -> Self {
-        ambiguous_with(&mut self.graph_info, Box::new(set.into_system_set()));
-        self
+    fn ambiguous_with<M>(self, set: impl IntoSystemSet<M>) -> Self {
+        Self(self.0.ambiguous_with(set))
     }
 
-    fn ambiguous_with_all(mut self) -> Self {
-        self.graph_info.ambiguous_with = Ambiguity::IgnoreAll;
-        self
+    fn ambiguous_with_all(self) -> Self {
+        Self(self.0.ambiguous_with_all())
     }
 }
 
@@ -483,14 +365,12 @@ mod sealed {
 }
 
 /// A collection of [`SystemConfig`].
-pub struct SystemConfigs {
-    pub(super) systems: Vec<SystemConfig>,
-    pub(super) graph_info: GraphInfo,
-    pub(super) conditions: Vec<BoxedCondition>,
-    /// If `true`, adds `before -> after` ordering constraints between the successive elements.
-    pub(super) chained: bool,
-    /// If `true`, all operations are applied on `graph_info` and `conditions` and not on `systems`.
-    pub(super) is_set: bool,
+pub struct SystemConfigs(SystemGraph);
+
+impl SystemConfigs {
+    pub(super) fn into_inner(self) -> SystemGraph {
+        self.0
+    }
 }
 
 /// Types that can convert into a [`SystemConfigs`].
@@ -591,134 +471,55 @@ impl IntoSystemConfigs<()> for SystemConfigs {
     }
 
     #[track_caller]
-    fn in_set(mut self, set: impl SystemSet) -> Self {
-        assert!(
-            !set.is_system_type(),
-            "adding arbitrary systems to a system type set is not allowed"
-        );
-        assert!(
-            !set.is_base(),
-            "Systems cannot be added to 'base' system sets using 'in_set'. Use 'in_base_set' instead."
-        );
-        if self.is_set {
-            self.graph_info.sets.push(Box::new(set));
-        } else {
-            for config in &mut self.systems {
-                config.graph_info.sets.push(set.dyn_clone());
-            }
-        }
-        self
+    fn in_set(self, set: impl SystemSet) -> Self {
+        Self(self.0.in_set(set))
     }
 
     #[track_caller]
-    fn in_base_set(mut self, set: impl SystemSet) -> Self {
-        assert!(
-            !set.is_system_type(),
-            "System type sets cannot be base sets."
-        );
-        assert!(
-            set.is_base(),
-            "Systems cannot be added to normal sets using 'in_base_set'. Use 'in_set' instead."
-        );
-        if self.is_set {
-            self.graph_info.set_base_set(Box::new(set));
-        } else {
-            for config in &mut self.systems {
-                config.graph_info.set_base_set(set.dyn_clone());
-            }
-        }
-        self
+    fn in_base_set(self, set: impl SystemSet) -> Self {
+        Self(self.0.in_base_set(set))
     }
 
-    fn before<M>(mut self, set: impl IntoSystemSet<M>) -> Self {
-        if self.is_set {
-            self.graph_info.dependencies.push(Dependency::new(
-                DependencyKind::Before,
-                Box::new(set.into_system_set()),
-            ));
-        } else {
-            let set = set.into_system_set();
-            for config in &mut self.systems {
-                config
-                    .graph_info
-                    .dependencies
-                    .push(Dependency::new(DependencyKind::Before, set.dyn_clone()));
-            }
-        }
-        self
+    fn before<M>(self, set: impl IntoSystemSet<M>) -> Self {
+        Self(self.0.before(set.into_system_set().into_graph()))
     }
 
-    fn after<M>(mut self, set: impl IntoSystemSet<M>) -> Self {
-        if self.is_set {
-            self.graph_info.dependencies.push(Dependency::new(
-                DependencyKind::After,
-                Box::new(set.into_system_set()),
-            ));
-        } else {
-            let set = set.into_system_set();
-            for config in &mut self.systems {
-                config
-                    .graph_info
-                    .dependencies
-                    .push(Dependency::new(DependencyKind::After, set.dyn_clone()));
-            }
-        }
-        self
+    fn after<M>(self, set: impl IntoSystemSet<M>) -> Self {
+        Self(self.0.after(set.into_system_set().into_graph()))
     }
 
-    fn run_if<P>(mut self, condition: impl Condition<P>) -> Self {
-        assert!(self.is_set, "'run_if' cannot be called before the system collection was turned into a set. Use 'into_set' or 'distributive_run_if' instead.");
-        self.conditions.push(new_condition(condition));
-        self
+    fn run_if<P>(self, condition: impl Condition<P>) -> Self {
+        Self(self.0.run_if(condition))
     }
 
-    fn distributive_run_if<P>(mut self, condition: impl Condition<P> + Clone) -> SystemConfigs {
-        assert!(!self.is_set, "'distributive_run_if' cannot be called after the system collection was turned into a set. Use 'run_if' instead.");
-        for config in &mut self.systems {
-            config.conditions.push(new_condition(condition.clone()));
-        }
-        self
+    fn distributive_run_if<P>(self, condition: impl Condition<P> + Clone) -> SystemConfigs {
+        Self(self.0.run_if(condition))
     }
 
-    fn ambiguous_with<M>(mut self, set: impl IntoSystemSet<M>) -> Self {
-        if self.is_set {
-            ambiguous_with(&mut self.graph_info, Box::new(set.into_system_set()));
-        } else {
-            let set = set.into_system_set();
-            for config in &mut self.systems {
-                ambiguous_with(&mut config.graph_info, set.dyn_clone());
-            }
-        }
-        self
+    fn ambiguous_with<M>(self, set: impl IntoSystemSet<M>) -> Self {
+        Self(self.0.ambiguous_with(set))
     }
 
-    fn ambiguous_with_all(mut self) -> Self {
-        if self.is_set {
-            self.graph_info.ambiguous_with = Ambiguity::IgnoreAll;
-        } else {
-            for config in &mut self.systems {
-                config.graph_info.ambiguous_with = Ambiguity::IgnoreAll;
-            }
-        }
-        self
+    fn ambiguous_with_all(self) -> Self {
+        Self(self.0.ambiguous_with_all())
     }
 
-    fn chain(mut self) -> Self {
-        self.chained = true;
-        self
+    fn chain(self) -> Self {
+        Self(self.0.chain())
     }
 
-    fn into_set(mut self) -> SystemConfigs {
-        self.is_set = true;
-        self
+    fn into_set(self) -> SystemConfigs {
+        Self(self.0.into_set())
     }
 }
 
 /// A collection of [`SystemSetConfig`].
-pub struct SystemSetConfigs {
-    pub(super) sets: Vec<SystemSetConfig>,
-    /// If `true`, adds `before -> after` ordering constraints between the successive elements.
-    pub(super) chained: bool,
+pub struct SystemSetConfigs(SystemGraph);
+
+impl SystemSetConfigs {
+    pub(super) fn into_inner(self) -> SystemGraph {
+        self.0
+    }
 }
 
 /// Types that can convert into a [`SystemSetConfigs`].
@@ -778,91 +579,33 @@ impl IntoSystemSetConfigs for SystemSetConfigs {
     }
 
     #[track_caller]
-    fn in_set(mut self, set: impl SystemSet) -> Self {
-        assert!(
-            !set.is_system_type(),
-            "adding arbitrary systems to a system type set is not allowed"
-        );
-        assert!(
-            !set.is_base(),
-            "Sets cannot be added to 'base' system sets using 'in_set'. Use 'in_base_set' instead."
-        );
-        for config in &mut self.sets {
-            assert!(
-                !config.set.is_base(),
-                "Base system sets cannot be added to other sets."
-            );
-            config.graph_info.sets.push(set.dyn_clone());
-        }
-
-        self
+    fn in_set(self, set: impl SystemSet) -> Self {
+        Self(self.0.in_set(set))
     }
 
     #[track_caller]
-    fn in_base_set(mut self, set: impl SystemSet) -> Self {
-        assert!(
-            !set.is_system_type(),
-            "System type sets cannot be base sets."
-        );
-        assert!(
-            set.is_base(),
-            "Sets cannot be added to normal sets using 'in_base_set'. Use 'in_set' instead."
-        );
-        for config in &mut self.sets {
-            assert!(
-                !config.set.is_base(),
-                "Base system sets cannot be added to other sets."
-            );
-            config.graph_info.set_base_set(set.dyn_clone());
-        }
-
-        self
+    fn in_base_set(self, set: impl SystemSet) -> Self {
+        Self(self.0.in_base_set(set))
     }
 
-    fn before<M>(mut self, set: impl IntoSystemSet<M>) -> Self {
-        let set = set.into_system_set();
-        for config in &mut self.sets {
-            config
-                .graph_info
-                .dependencies
-                .push(Dependency::new(DependencyKind::Before, set.dyn_clone()));
-        }
-
-        self
+    fn before<M>(self, set: impl IntoSystemSet<M>) -> Self {
+        Self(self.0.before(set.into_system_set().into_graph()))
     }
 
-    fn after<M>(mut self, set: impl IntoSystemSet<M>) -> Self {
-        let set = set.into_system_set();
-        for config in &mut self.sets {
-            config
-                .graph_info
-                .dependencies
-                .push(Dependency::new(DependencyKind::After, set.dyn_clone()));
-        }
-
-        self
+    fn after<M>(self, set: impl IntoSystemSet<M>) -> Self {
+        Self(self.0.after(set.into_system_set().into_graph()))
     }
 
-    fn ambiguous_with<M>(mut self, set: impl IntoSystemSet<M>) -> Self {
-        let set = set.into_system_set();
-        for config in &mut self.sets {
-            ambiguous_with(&mut config.graph_info, set.dyn_clone());
-        }
-
-        self
+    fn ambiguous_with<M>(self, set: impl IntoSystemSet<M>) -> Self {
+        Self(self.0.ambiguous_with(set))
     }
 
-    fn ambiguous_with_all(mut self) -> Self {
-        for config in &mut self.sets {
-            config.graph_info.ambiguous_with = Ambiguity::IgnoreAll;
-        }
-
-        self
+    fn ambiguous_with_all(self) -> Self {
+        Self(self.0.ambiguous_with_all())
     }
 
-    fn chain(mut self) -> Self {
-        self.chained = true;
-        self
+    fn chain(self) -> Self {
+        Self(self.0.chain())
     }
 }
 
@@ -875,13 +618,7 @@ macro_rules! impl_system_collection {
             #[allow(non_snake_case)]
             fn into_configs(self) -> SystemConfigs {
                 let ($($sys,)*) = self;
-                SystemConfigs {
-                    systems: vec![$($sys.into_config(),)*],
-                    graph_info: GraphInfo::system_set(),
-                    conditions: Vec::new(),
-                    chained: false,
-                    is_set: false,
-                }
+                SystemConfigs(($($sys.into_config().0,)*).into_graph())
             }
         }
     }
@@ -894,10 +631,7 @@ macro_rules! impl_system_set_collection {
             #[allow(non_snake_case)]
             fn into_configs(self) -> SystemSetConfigs {
                 let ($($set,)*) = self;
-                SystemSetConfigs {
-                    sets: vec![$($set.into_config(),)*],
-                    chained: false,
-                }
+                SystemSetConfigs(($($set.into_config().0,)*).into_graph())
             }
         }
     }

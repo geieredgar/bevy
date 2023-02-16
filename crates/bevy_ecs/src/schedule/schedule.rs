@@ -23,6 +23,8 @@ use crate::{
     world::World,
 };
 
+use super::graph::{IntoSystemGraph, SystemGraph, SystemGraphType};
+
 /// Resource that stores [`Schedule`]s mapped to [`ScheduleLabel`]s.
 #[derive(Default, Resource)]
 pub struct Schedules {
@@ -135,8 +137,7 @@ impl Schedule {
 
     /// Add a system to the schedule.
     pub fn add_system<P>(&mut self, system: impl IntoSystemConfig<P>) -> &mut Self {
-        self.graph.add_system(system);
-        self
+        self.add_system_graph(system.into_config().into_inner())
     }
 
     /// Add a collection of systems to the schedule.
@@ -153,19 +154,22 @@ impl Schedule {
     /// on [`IntoSystemConfigs<P>`] will implicitly add an [`AnonymousSet`] that contains all
     /// listed systems.
     pub fn add_systems<P>(&mut self, systems: impl IntoSystemConfigs<P>) -> &mut Self {
-        self.graph.add_systems(systems);
-        self
+        self.add_system_graph(systems.into_configs().into_inner())
     }
 
     /// Configures a system set in this schedule, adding it if it does not exist.
     pub fn configure_set(&mut self, set: impl IntoSystemSetConfig) -> &mut Self {
-        self.graph.configure_set(set);
-        self
+        self.add_system_graph(set.into_config().into_inner())
     }
 
     /// Configures a collection of system sets in this schedule, adding them if they does not exist.
     pub fn configure_sets(&mut self, sets: impl IntoSystemSetConfigs) -> &mut Self {
-        self.graph.configure_sets(sets);
+        self.add_system_graph(sets.into_configs().into_inner())
+    }
+
+    /// TODO:
+    pub fn add_system_graph<P>(&mut self, graph: impl IntoSystemGraph<P>) -> &mut Self {
+        self.graph.add_system_graph(graph.into_graph()).unwrap();
         self
     }
 
@@ -314,6 +318,10 @@ impl SystemSetNode {
     pub fn is_anonymous(&self) -> bool {
         self.inner.is_anonymous()
     }
+
+    pub fn is_base(&self) -> bool {
+        self.inner.is_base()
+    }
 }
 
 /// A [`BoxedSystem`] with metadata, stored in a [`ScheduleGraph`].
@@ -386,123 +394,188 @@ impl ScheduleGraph {
         }
     }
 
-    fn add_systems<P>(&mut self, systems: impl IntoSystemConfigs<P>) {
-        let configs = systems.into_configs();
-        let SystemConfigs {
-            systems,
-            graph_info,
-            conditions,
-            chained,
-            is_set,
-        } = configs;
-        if is_set {
-            let set = AnonymousSet::new();
-            let system_iter = systems.into_iter().map(|system| system.in_set(set));
-            self.add_system_iter(system_iter, chained);
-            self.configure_set(SystemSetConfig {
-                conditions,
-                graph_info,
-                set: Box::new(set),
-            });
-        } else {
-            self.add_system_iter(systems.into_iter(), chained);
-        }
+    fn add_system_graph(&mut self, graph: SystemGraph) -> Result<(), ScheduleBuildError> {
+        self.changed = true;
+        self.add_graph_inner(graph)?;
+        Ok(())
     }
 
-    fn add_system_iter(
-        &mut self,
-        mut system_iter: impl Iterator<Item = SystemConfig>,
-        chained: bool,
-    ) {
-        if chained {
-            let Some(prev) = system_iter.next() else { return };
-            let mut prev_id = self.add_system_inner(prev).unwrap();
-            for next in system_iter {
-                let next_id = self.add_system_inner(next).unwrap();
-                self.dependency.graph.add_edge(prev_id, next_id, ());
-                prev_id = next_id;
+    fn add_graph_inner(&mut self, graph: SystemGraph) -> Result<NodeIds, ScheduleBuildError> {
+        let ids = match graph.graph_type {
+            SystemGraphType::System { system, conditions } => {
+                let id = NodeId::System(self.systems.len());
+                // system init has to be deferred (need `&mut World`)
+                self.uninit.push((id, 0));
+                self.systems.push(SystemNode::new(system));
+                self.system_conditions.push(Some(conditions));
+                NodeIds::Single(id)
             }
-        } else {
-            for system in system_iter {
-                self.add_system_inner(system).unwrap();
+            SystemGraphType::Set {
+                set,
+                mut conditions,
+            } => {
+                let id = match self.system_set_ids.get(&set) {
+                    Some(&id) => id,
+                    None => self.add_set(set.dyn_clone()),
+                };
+                // system init has to be deferred (need `&mut World`)
+                let system_set_conditions =
+                    self.system_set_conditions[id.index()].get_or_insert_with(Vec::new);
+                self.uninit.push((id, system_set_conditions.len()));
+                system_set_conditions.append(&mut conditions);
+                NodeIds::Single(id)
             }
-        }
-    }
-
-    fn add_system<P>(&mut self, system: impl IntoSystemConfig<P>) {
-        self.add_system_inner(system).unwrap();
-    }
-
-    fn add_system_inner<P>(
-        &mut self,
-        system: impl IntoSystemConfig<P>,
-    ) -> Result<NodeId, ScheduleBuildError> {
-        let SystemConfig {
-            system,
-            graph_info,
-            conditions,
-        } = system.into_config();
-
-        let id = NodeId::System(self.systems.len());
-
-        // graph updates are immediate
-        self.update_graphs(id, graph_info, false)?;
-
-        // system init has to be deferred (need `&mut World`)
-        self.uninit.push((id, 0));
-        self.systems.push(SystemNode::new(system));
-        self.system_conditions.push(Some(conditions));
-
-        Ok(id)
-    }
-
-    fn configure_sets(&mut self, sets: impl IntoSystemSetConfigs) {
-        let SystemSetConfigs { sets, chained } = sets.into_configs();
-        let mut set_iter = sets.into_iter();
-        if chained {
-            let Some(prev) = set_iter.next() else { return };
-            let mut prev_id = self.configure_set_inner(prev).unwrap();
-            for next in set_iter {
-                let next_id = self.configure_set_inner(next).unwrap();
-                self.dependency.graph.add_edge(prev_id, next_id, ());
-                prev_id = next_id;
+            SystemGraphType::AnonymousSet {
+                members,
+                chained,
+                mut conditions,
+            } => {
+                let set = AnonymousSet::new();
+                let id = self.add_set(Box::new(set));
+                let member_ids = self.add_graph_iter(members.into_iter(), chained)?;
+                member_ids.for_each(|member_id| {
+                    self.hierarchy.graph.add_edge(id, member_id, ());
+                });
+                // system init has to be deferred (need `&mut World`)
+                let system_set_conditions =
+                    self.system_set_conditions[id.index()].get_or_insert_with(Vec::new);
+                self.uninit.push((id, system_set_conditions.len()));
+                system_set_conditions.append(&mut conditions);
+                NodeIds::Single(id)
             }
-        } else {
-            for set in set_iter {
-                self.configure_set_inner(set).unwrap();
+            SystemGraphType::Collection { members, chained } => {
+                self.add_graph_iter(members.into_iter(), chained)?
             }
-        }
-    }
-
-    fn configure_set(&mut self, set: impl IntoSystemSetConfig) {
-        self.configure_set_inner(set).unwrap();
-    }
-
-    fn configure_set_inner(
-        &mut self,
-        set: impl IntoSystemSetConfig,
-    ) -> Result<NodeId, ScheduleBuildError> {
-        let SystemSetConfig {
-            set,
-            graph_info,
-            mut conditions,
-        } = set.into_config();
-
-        let id = match self.system_set_ids.get(&set) {
-            Some(&id) => id,
-            None => self.add_set(set.dyn_clone()),
         };
+        self.apply_graph_info(&ids, graph.graph_info)?;
+        Ok(ids)
+    }
 
-        // graph updates are immediate
-        self.update_graphs(id, graph_info, set.is_base())?;
+    fn apply_graph_info(
+        &mut self,
+        ids: &NodeIds,
+        graph_info: GraphInfo,
+    ) -> Result<(), ScheduleBuildError> {
+        for set in graph_info.sets {
+            let set_ids = self.add_graph_inner(set)?;
+            set_ids.try_combine(ids, |set_id, id| {
+                if set_id == id {
+                    return Err(ScheduleBuildError::HierarchyLoop(
+                        self.get_node_name(&set_id),
+                    ));
+                }
+                self.hierarchy.graph.add_edge(set_id, id, ());
+                // ensure set also appears in dependency graph
+                self.dependency.graph.add_node(set_id);
+                Ok(())
+            })?;
+        }
 
-        // system init has to be deferred (need `&mut World`)
-        let system_set_conditions =
-            self.system_set_conditions[id.index()].get_or_insert_with(Vec::new);
-        self.uninit.push((id, system_set_conditions.len()));
-        system_set_conditions.append(&mut conditions);
+        ids.try_for_each(|id| {
+            if !self.dependency.graph.contains_node(id) {
+                self.dependency.graph.add_node(id);
+            }
+            let is_base_set = match id {
+                NodeId::System(_) => false,
+                NodeId::Set(index) => self.system_sets[index].is_base(),
+            };
+            if !is_base_set {
+                if let Some(base_set) = graph_info.base_set.clone() {
+                    let set_id = self.system_set_ids[&base_set];
+                    self.add_hierarchy_edge(set_id, id)?;
+                } else if let Some(default_base_set) = &self.default_base_set {
+                    if graph_info.add_default_base_set {
+                        match id {
+                            NodeId::System(_) => {
+                                // Queue the default base set. We queue systems instead of adding directly to allow
+                                // sets to define base sets, which will override the default inheritance behavior
+                                self.maybe_default_base_set.push(id);
+                            }
+                            NodeId::Set(_) => {
+                                // Sets should be added automatically because developers explicitly called
+                                // in_default_base_set()
+                                let set_id = self.system_set_ids[default_base_set];
+                                self.add_hierarchy_edge(set_id, id)?;
+                            }
+                        }
+                    }
+                }
+            }
+            Ok(())
+        })?;
 
-        Ok(id)
+        for Dependency { kind, graph } in graph_info.dependencies {
+            let graph_ids = self.add_graph_inner(graph)?;
+            graph_ids.for_each(|id| {
+                self.dependency.graph.add_node(id);
+            });
+            let add_edge = |a, b| self.add_dependency_edge(a, b);
+            match kind {
+                DependencyKind::Before => ids.try_combine(&graph_ids, add_edge)?,
+                DependencyKind::After => graph_ids.try_combine(ids, add_edge)?,
+            }
+        }
+        match graph_info.ambiguous_with {
+            Ambiguity::Check => (),
+            Ambiguity::IgnoreWithSet(ambiguous_with) => {
+                for set in ambiguous_with
+                    .into_iter()
+                    .map(|set| self.system_set_ids[&set])
+                {
+                    ids.for_each(|id| {
+                        self.ambiguous_with.add_edge(id, set, ());
+                    });
+                }
+            }
+            Ambiguity::IgnoreAll => {
+                ids.for_each(|id| {
+                    self.ambiguous_with_all.insert(id);
+                });
+            }
+        }
+        Ok(())
+    }
+
+    fn add_hierarchy_edge(&mut self, a: NodeId, b: NodeId) -> Result<(), ScheduleBuildError> {
+        if a != b {
+            self.hierarchy.graph.add_edge(a, b, ());
+            Ok(())
+        } else {
+            Err(ScheduleBuildError::HierarchyLoop(self.get_node_name(&a)))
+        }
+    }
+
+    fn add_dependency_edge(&mut self, a: NodeId, b: NodeId) -> Result<(), ScheduleBuildError> {
+        if a != b {
+            self.dependency.graph.add_edge(a, b, ());
+            Ok(())
+        } else {
+            Err(ScheduleBuildError::DependencyLoop(self.get_node_name(&a)))
+        }
+    }
+
+    fn add_graph_iter(
+        &mut self,
+        mut iter: impl Iterator<Item = SystemGraph>,
+        chained: bool,
+    ) -> Result<NodeIds, ScheduleBuildError> {
+        let mut ids = Vec::new();
+        if chained {
+            let Some(prev) = iter.next() else { return Ok(NodeIds::Multiple(ids) )};
+            let mut prev_ids = self.add_graph_inner(prev)?;
+            prev_ids.for_each(|id| ids.push(id));
+            for next in iter {
+                let next_ids = self.add_graph_inner(next)?;
+                next_ids.for_each(|id| ids.push(id));
+                prev_ids.try_combine(&next_ids, |a, b| self.add_dependency_edge(a, b))?;
+                prev_ids = next_ids;
+            }
+        } else {
+            for graph in iter {
+                self.add_graph_inner(graph)?;
+            }
+        }
+        Ok(NodeIds::Multiple(ids))
     }
 
     fn add_set(&mut self, set: BoxedSystemSet) -> NodeId {
@@ -511,157 +584,6 @@ impl ScheduleGraph {
         self.system_set_conditions.push(None);
         self.system_set_ids.insert(set, id);
         id
-    }
-
-    fn check_set(&mut self, id: &NodeId, set: &dyn SystemSet) -> Result<(), ScheduleBuildError> {
-        match self.system_set_ids.get(set) {
-            Some(set_id) => {
-                if id == set_id {
-                    let string = format!("{:?}", self.get_node_name(id));
-                    return Err(ScheduleBuildError::HierarchyLoop(string));
-                }
-            }
-            None => {
-                self.add_set(set.dyn_clone());
-            }
-        }
-
-        Ok(())
-    }
-
-    fn check_sets(
-        &mut self,
-        id: &NodeId,
-        graph_info: &GraphInfo,
-    ) -> Result<(), ScheduleBuildError> {
-        for set in &graph_info.sets {
-            self.check_set(id, &**set)?;
-        }
-
-        if let Some(base_set) = &graph_info.base_set {
-            self.check_set(id, &**base_set)?;
-        }
-
-        Ok(())
-    }
-
-    fn check_edges(
-        &mut self,
-        id: &NodeId,
-        graph_info: &GraphInfo,
-    ) -> Result<(), ScheduleBuildError> {
-        for Dependency { kind: _, set } in &graph_info.dependencies {
-            match self.system_set_ids.get(set) {
-                Some(set_id) => {
-                    if id == set_id {
-                        let string = format!("{:?}", &self.get_node_name(id));
-                        return Err(ScheduleBuildError::DependencyLoop(string));
-                    }
-                }
-                None => {
-                    self.add_set(set.dyn_clone());
-                }
-            }
-        }
-
-        if let Ambiguity::IgnoreWithSet(ambiguous_with) = &graph_info.ambiguous_with {
-            for set in ambiguous_with {
-                if !self.system_set_ids.contains_key(set) {
-                    self.add_set(set.dyn_clone());
-                }
-            }
-        }
-
-        Ok(())
-    }
-
-    fn update_graphs(
-        &mut self,
-        id: NodeId,
-        graph_info: GraphInfo,
-        is_base_set: bool,
-    ) -> Result<(), ScheduleBuildError> {
-        self.check_sets(&id, &graph_info)?;
-        self.check_edges(&id, &graph_info)?;
-        self.changed = true;
-
-        let GraphInfo {
-            sets,
-            dependencies,
-            ambiguous_with,
-            base_set,
-            add_default_base_set,
-            ..
-        } = graph_info;
-
-        self.hierarchy.graph.add_node(id);
-        self.dependency.graph.add_node(id);
-
-        for set in sets.into_iter().map(|set| self.system_set_ids[&set]) {
-            self.hierarchy.graph.add_edge(set, id, ());
-
-            // ensure set also appears in dependency graph
-            self.dependency.graph.add_node(set);
-        }
-
-        // If the current node is not a base set, set the base set if it was configured
-        if !is_base_set {
-            if let Some(base_set) = base_set {
-                let set_id = self.system_set_ids[&base_set];
-                self.hierarchy.graph.add_edge(set_id, id, ());
-            } else if let Some(default_base_set) = &self.default_base_set {
-                if add_default_base_set {
-                    match id {
-                        NodeId::System(_) => {
-                            // Queue the default base set. We queue systems instead of adding directly to allow
-                            // sets to define base sets, which will override the default inheritance behavior
-                            self.maybe_default_base_set.push(id);
-                        }
-                        NodeId::Set(_) => {
-                            // Sets should be added automatically because developers explicitly called
-                            // in_default_base_set()
-                            let set_id = self.system_set_ids[default_base_set];
-                            self.hierarchy.graph.add_edge(set_id, id, ());
-                        }
-                    }
-                }
-            }
-        }
-
-        if !self.dependency.graph.contains_node(id) {
-            self.dependency.graph.add_node(id);
-        }
-
-        for (kind, set) in dependencies
-            .into_iter()
-            .map(|Dependency { kind, set }| (kind, self.system_set_ids[&set]))
-        {
-            let (lhs, rhs) = match kind {
-                DependencyKind::Before => (id, set),
-                DependencyKind::After => (set, id),
-            };
-            self.dependency.graph.add_edge(lhs, rhs, ());
-
-            // ensure set also appears in hierarchy graph
-            self.hierarchy.graph.add_node(set);
-        }
-
-        match ambiguous_with {
-            Ambiguity::Check => (),
-            Ambiguity::IgnoreWithSet(ambiguous_with) => {
-                for set in ambiguous_with
-                    .into_iter()
-                    .map(|set| self.system_set_ids[&set])
-                {
-                    self.ambiguous_with.add_edge(id, set, ());
-                }
-            }
-            Ambiguity::IgnoreAll => {
-                self.ambiguous_with_all.insert(id);
-            }
-        }
-
-        Ok(())
     }
 
     fn initialize(&mut self, world: &mut World) {

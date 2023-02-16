@@ -8,6 +8,8 @@ use fixedbitset::FixedBitSet;
 
 use crate::schedule::set::*;
 
+use super::graph::SystemGraph;
+
 /// Unique identifier for a system or system set.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) enum NodeId {
@@ -34,6 +36,58 @@ impl NodeId {
     }
 }
 
+pub(crate) enum NodeIds {
+    Single(NodeId),
+    Multiple(Vec<NodeId>),
+}
+
+impl NodeIds {
+    pub(crate) fn for_each(&self, mut f: impl FnMut(NodeId)) {
+        match self {
+            NodeIds::Single(id) => f(*id),
+            NodeIds::Multiple(ids) => ids.iter().copied().for_each(f),
+        }
+    }
+
+    pub(crate) fn try_for_each<E>(
+        &self,
+        mut f: impl FnMut(NodeId) -> Result<(), E>,
+    ) -> Result<(), E> {
+        match self {
+            NodeIds::Single(id) => f(*id),
+            NodeIds::Multiple(ids) => ids.iter().copied().try_for_each(f),
+        }
+    }
+
+    pub(crate) fn try_combine<E>(
+        &self,
+        other: &Self,
+        mut f: impl FnMut(NodeId, NodeId) -> Result<(), E>,
+    ) -> Result<(), E> {
+        match (self, other) {
+            (NodeIds::Single(a_id), NodeIds::Single(b_id)) => f(*a_id, *b_id)?,
+            (NodeIds::Single(a_id), NodeIds::Multiple(b_ids)) => {
+                for b_id in b_ids {
+                    f(*a_id, *b_id)?;
+                }
+            }
+            (NodeIds::Multiple(a_ids), NodeIds::Single(b_id)) => {
+                for a_id in a_ids {
+                    f(*a_id, *b_id)?;
+                }
+            }
+            (NodeIds::Multiple(a_ids), NodeIds::Multiple(b_ids)) => {
+                for a_id in a_ids {
+                    for b_id in b_ids {
+                        f(*a_id, *b_id)?;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Specifies what kind of edge should be added to the dependency graph.
 #[derive(Debug, Clone, Copy, Eq, PartialEq, PartialOrd, Ord, Hash)]
 pub(crate) enum DependencyKind {
@@ -44,15 +98,14 @@ pub(crate) enum DependencyKind {
 }
 
 /// An edge to be added to the dependency graph.
-#[derive(Clone)]
 pub(crate) struct Dependency {
     pub(crate) kind: DependencyKind,
-    pub(crate) set: BoxedSystemSet,
+    pub(crate) graph: SystemGraph,
 }
 
 impl Dependency {
-    pub fn new(kind: DependencyKind, set: BoxedSystemSet) -> Self {
-        Self { kind, set }
+    pub fn new(kind: DependencyKind, graph: SystemGraph) -> Self {
+        Self { kind, graph }
     }
 }
 
@@ -67,9 +120,8 @@ pub(crate) enum Ambiguity {
     IgnoreAll,
 }
 
-#[derive(Clone)]
 pub(crate) struct GraphInfo {
-    pub(crate) sets: Vec<BoxedSystemSet>,
+    pub(crate) sets: Vec<SystemGraph>,
     pub(crate) dependencies: Vec<Dependency>,
     pub(crate) ambiguous_with: Ambiguity,
     pub(crate) add_default_base_set: bool,
