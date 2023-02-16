@@ -388,25 +388,24 @@ impl ScheduleGraph {
 
     fn add_systems<P>(&mut self, systems: impl IntoSystemConfigs<P>) {
         let configs = systems.into_configs();
-        if configs.should_add_anonymous_set() {
-            let SystemConfigs {
-                systems,
-                graph_info,
-                conditions,
-                chained,
-            } = configs;
-            let implicit_set = AnonymousSet::new();
-            let system_iter = systems
-                .into_iter()
-                .map(|system| system.in_set(implicit_set));
+        let SystemConfigs {
+            systems,
+            graph_info,
+            conditions,
+            chained,
+            is_set,
+        } = configs;
+        if is_set {
+            let set = AnonymousSet::new();
+            let system_iter = systems.into_iter().map(|system| system.in_set(set));
             self.add_system_iter(system_iter, chained);
             self.configure_set(SystemSetConfig {
                 conditions,
                 graph_info,
-                set: Box::new(implicit_set),
+                set: Box::new(set),
             });
         } else {
-            self.add_system_iter(configs.systems.into_iter(), configs.chained);
+            self.add_system_iter(systems.into_iter(), chained);
         }
     }
 

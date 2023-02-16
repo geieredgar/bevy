@@ -483,27 +483,14 @@ mod sealed {
 }
 
 /// A collection of [`SystemConfig`].
-// NOTE: When adding a field to this struct, consider including them in `should_add_anonymous_set`.
 pub struct SystemConfigs {
     pub(super) systems: Vec<SystemConfig>,
     pub(super) graph_info: GraphInfo,
     pub(super) conditions: Vec<BoxedCondition>,
     /// If `true`, adds `before -> after` ordering constraints between the successive elements.
     pub(super) chained: bool,
-}
-
-impl SystemConfigs {
-    // This decides whether we need to create an anonymous set when adding self to a ScheduleGraph.
-    // If false, only the contained systems are added to the ScheduleGraph, possibly chained,
-    // but without any further graph information or conditions (except the ones found in each
-    // individual system config).
-    pub(super) fn should_add_anonymous_set(&self) -> bool {
-        !self.conditions.is_empty()
-            || !self.graph_info.sets.is_empty()
-            || self.graph_info.base_set.is_some()
-            || !self.graph_info.dependencies.is_empty()
-            || !matches!(self.graph_info.ambiguous_with, Ambiguity::Check)
-    }
+    /// If `true`, all operations are applied on `graph_info` and `conditions` and not on `systems`.
+    pub(super) is_set: bool,
 }
 
 /// Types that can convert into a [`SystemConfigs`].
@@ -541,8 +528,30 @@ where
     ///
     /// The `Condition` will be evaluated at most once (per schedule run),
     /// the first time one of these systems prepares to run.
+    ///
+    /// # Panics
+    ///
+    /// Panics if [`into_set`](IntoSystemConfigs::into_set) was not called before
+    /// [`run_if`](IntoSystemConfigs::run_if).
+    /// Use [`distributive_run_if`](IntoSystemConfigs::distributive_run_if) with a cloneable
+    /// [`Condition`] if you don't want to turn the system collection into an set.
     fn run_if<P>(self, condition: impl Condition<P>) -> SystemConfigs {
         self.into_configs().run_if(condition)
+    }
+
+    /// Run these systems only if the [`Condition`] is `true`
+    ///
+    /// The `Condition` will be evaluated at most once for each system (per schedule run),
+    /// when it prepares to run.
+    ///
+    /// # Panics
+    ///
+    /// Panics if [`into_set`](IntoSystemConfigs::into_set) was called before
+    /// [`distributive_run_if`](IntoSystemConfigs::distributive_run_if).
+    /// Use [`run_if`](IntoSystemConfigs::run_if) after you have turned the system collection
+    /// into an set.
+    fn distributive_run_if<P>(self, condition: impl Condition<P> + Clone) -> SystemConfigs {
+        self.into_configs().distributive_run_if(condition)
     }
 
     /// Suppress warnings and errors that would result from these systems having ambiguities
@@ -563,6 +572,17 @@ where
     fn chain(self) -> SystemConfigs {
         self.into_configs().chain()
     }
+
+    /// Treat this collection as an anonymous set of systems.
+    ///
+    /// All following operations will operate on the anonymous set instead of on each
+    /// individual system.
+    ///
+    /// This is required when calling [`run_if`](IntoSystemConfigs::run_if) because the
+    /// condition cannot be cloned.
+    fn into_set(self) -> SystemConfigs {
+        self.into_configs().into_set()
+    }
 }
 
 impl IntoSystemConfigs<()> for SystemConfigs {
@@ -580,7 +600,14 @@ impl IntoSystemConfigs<()> for SystemConfigs {
             !set.is_base(),
             "Systems cannot be added to 'base' system sets using 'in_set'. Use 'in_base_set' instead."
         );
-        self.graph_info.sets.push(Box::new(set));
+        if self.is_set {
+            self.graph_info.sets.push(Box::new(set));
+        } else {
+            let set = set.into_system_set();
+            for config in &mut self.systems {
+                config.graph_info.sets.push(set.dyn_clone());
+            }
+        }
         self
     }
 
@@ -594,43 +621,97 @@ impl IntoSystemConfigs<()> for SystemConfigs {
             set.is_base(),
             "Systems cannot be added to normal sets using 'in_base_set'. Use 'in_set' instead."
         );
-        self.graph_info.set_base_set(Box::new(set));
+        if self.is_set {
+            self.graph_info.set_base_set(Box::new(set));
+        } else {
+            let set = set.into_system_set();
+            for config in &mut self.systems {
+                config.graph_info.set_base_set(set.dyn_clone());
+            }
+        }
         self
     }
 
     fn before<M>(mut self, set: impl IntoSystemSet<M>) -> Self {
-        self.graph_info.dependencies.push(Dependency::new(
-            DependencyKind::Before,
-            Box::new(set.into_system_set()),
-        ));
+        if self.is_set {
+            self.graph_info.dependencies.push(Dependency::new(
+                DependencyKind::Before,
+                Box::new(set.into_system_set()),
+            ));
+        } else {
+            let set = set.into_system_set();
+            for config in &mut self.systems {
+                config
+                    .graph_info
+                    .dependencies
+                    .push(Dependency::new(DependencyKind::Before, set.dyn_clone()));
+            }
+        }
         self
     }
 
     fn after<M>(mut self, set: impl IntoSystemSet<M>) -> Self {
-        self.graph_info.dependencies.push(Dependency::new(
-            DependencyKind::After,
-            Box::new(set.into_system_set()),
-        ));
+        if self.is_set {
+            self.graph_info.dependencies.push(Dependency::new(
+                DependencyKind::After,
+                Box::new(set.into_system_set()),
+            ));
+        } else {
+            let set = set.into_system_set();
+            for config in &mut self.systems {
+                config
+                    .graph_info
+                    .dependencies
+                    .push(Dependency::new(DependencyKind::After, set.dyn_clone()));
+            }
+        }
         self
     }
 
     fn run_if<P>(mut self, condition: impl Condition<P>) -> Self {
+        assert!(self.is_set, "'run_if' cannot be called before the system collection was turned into a set. Use 'into_set' or 'distributive_run_if' instead.");
         self.conditions.push(new_condition(condition));
         self
     }
 
+    fn distributive_run_if<P>(mut self, condition: impl Condition<P> + Clone) -> SystemConfigs {
+        assert!(!self.is_set, "'distributive_run_if' cannot be called after the system collection was turned into a set. Use 'run_if' instead.");
+        for config in &mut self.systems {
+            config.conditions.push(new_condition(condition.clone()));
+        }
+        self
+    }
+
     fn ambiguous_with<M>(mut self, set: impl IntoSystemSet<M>) -> Self {
-        ambiguous_with(&mut self.graph_info, Box::new(set.into_system_set()));
+        if self.is_set {
+            ambiguous_with(&mut self.graph_info, Box::new(set.into_system_set()));
+        } else {
+            let set = set.into_system_set();
+            for config in &mut self.systems {
+                ambiguous_with(&mut config.graph_info, set.dyn_clone());
+            }
+        }
         self
     }
 
     fn ambiguous_with_all(mut self) -> Self {
-        self.graph_info.ambiguous_with = Ambiguity::IgnoreAll;
+        if self.is_set {
+            self.graph_info.ambiguous_with = Ambiguity::IgnoreAll;
+        } else {
+            for config in &mut self.systems {
+                config.graph_info.ambiguous_with = Ambiguity::IgnoreAll;
+            }
+        }
         self
     }
 
     fn chain(mut self) -> Self {
         self.chained = true;
+        self
+    }
+
+    fn into_set(mut self) -> SystemConfigs {
+        self.is_set = true;
         self
     }
 }
@@ -801,6 +882,7 @@ macro_rules! impl_system_collection {
                     graph_info: GraphInfo::system_set(),
                     conditions: Vec::new(),
                     chained: false,
+                    is_set: false,
                 }
             }
         }
