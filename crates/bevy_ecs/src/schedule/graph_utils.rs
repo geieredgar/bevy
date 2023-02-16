@@ -57,7 +57,7 @@ impl Dependency {
 }
 
 /// Configures ambiguity detection for a single system.
-#[derive(Clone, Default)]
+#[derive(Clone, Debug, Default)]
 pub(crate) enum Ambiguity {
     #[default]
     Check,
